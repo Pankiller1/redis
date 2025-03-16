@@ -85,6 +85,7 @@ void setGenericCommand(client *c, int flags, robj *key, robj *val, robj *expire,
     long long milliseconds = 0; /* initialized to avoid any harmness warning */
     int found = 0;
     int setkey_flags = 0;
+    int old_access_count = 0;
 
     if (expire && getExpireMillisecondsOrReply(c, expire, flags, unit, &milliseconds) != C_OK) {
         return;
@@ -94,7 +95,12 @@ void setGenericCommand(client *c, int flags, robj *key, robj *val, robj *expire,
         if (getGenericCommand(c) == C_ERR) return;
     }
 
-    found = (lookupKeyWrite(c->db,key) != NULL);
+    robj *old_val = lookupKeyWrite(c->db,key);
+    if (old_val) {
+        found = 1;
+        old_access_count = old_val->access_count;
+    }
+    // found = (lookupKeyWrite(c->db,key) != NULL);
 
     if ((flags & OBJ_SET_NX && found) ||
         (flags & OBJ_SET_XX && !found))
@@ -108,6 +114,7 @@ void setGenericCommand(client *c, int flags, robj *key, robj *val, robj *expire,
     setkey_flags |= (flags & OBJ_KEEPTTL) ? SETKEY_KEEPTTL : 0;
     setkey_flags |= found ? SETKEY_ALREADY_EXIST : SETKEY_DOESNT_EXIST;
 
+    val->access_count = old_access_count;
     setKey(c,c->db,key,val,setkey_flags);
     server.dirty++;
     notifyKeyspaceEvent(NOTIFY_STRING,"set",key,c->db->id);
@@ -326,8 +333,9 @@ int getGenericCommand(client *c) {
     if (checkType(c,o,OBJ_STRING)) {
         return C_ERR;
     }
-
+    // addReplyArrayLen(c,2);
     addReplyBulk(c,o);
+    // addReplyLongLong(c, (long long)o->access_count);
     return C_OK;
 }
 

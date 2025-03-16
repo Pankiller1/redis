@@ -859,6 +859,8 @@ typedef struct redisObject {
                             * and most significant 16 bits access time). */
     int refcount;
     void *ptr;
+
+    int access_count;
 } robj;
 
 /* The a string name for an object's type as listed above
@@ -921,7 +923,9 @@ typedef struct clusterSlotToKeyMapping clusterSlotToKeyMapping;
  * database. The database number is the 'id' field in the structure. */
 typedef struct redisDb {
     dict *dict;                 /* The keyspace for this DB */
+    dict *cxl_dict;
     dict *expires;              /* Timeout of keys with a timeout set */
+    dict *cxl_expires;
     dict *blocking_keys;        /* Keys with clients waiting for data (BLPOP)*/
     dict *ready_keys;           /* Blocked keys that received a PUSH */
     dict *watched_keys;         /* WATCHED keys for MULTI/EXEC CAS */
@@ -1495,6 +1499,8 @@ struct redisServer {
     int client_pause_in_transaction; /* Was a client pause executed during this Exec? */
     int thp_enabled;                 /* If true, THP is enabled. */
     size_t page_size;                /* The page size of OS. */
+
+    int access_count_threshold;
     /* Modules */
     dict *moduleapi;            /* Exported core APIs dictionary for modules. */
     dict *sharedapi;            /* Like moduleapi but containing the APIs that

@@ -1179,6 +1179,62 @@ void cronUpdateMemoryStats() {
     }
 }
 
+void checkMemoryAndMigrateToCXL(void){
+    if (server.loading) return;
+    // size_t maxmemory = server.maxmemory;
+    // size_t used_memory = zmalloc_used_memory();
+    // size_t threshold_memory = (maxmemory * server.demotion_threshold) / 100;
+    // if (maxmemory != 0 && used_memory >= threshold_memory) {
+    //     for (int j = 0; j < server.dbnum; j++){
+    //         redisDb *db = &server.db[j];
+    //         dictIterator *di = dictGetSafeIterator(db->dict);
+    //         dictEntry *de;
+
+
+    //         while((de = dictNext(di)) != NULL){
+    //             robj *key = dictGetKey(de);
+    //             robj *val = dictGetVal(de);
+
+    //             if (val->access_count < server.access_count_threshold){
+    //                 dictReplace(db->cxl_dict, key->ptr, val);
+    //                 dictDelete(db->dict, key->ptr);
+    //             }
+    //             val->access_count = 0;
+    //         }
+    //         dictReleaseIterator(di);
+    //     }
+    // }
+    for (int j = 0; j < server.dbnum; j++){
+        redisDb *db = &server.db[j];
+        if (!db->dict || dictSize(db->dict) == 0) continue;
+        dictIterator *di = dictGetSafeIterator(db->dict);  
+        if (!di) continue;
+        dictEntry *de;
+
+        while((de = dictNext(di)) != NULL){
+            sds key = dictGetKey(de);
+            robj *val = dictGetVal(de);
+            if (!key || !val) {
+                serverLog(LL_WARNING, "WARNING: Skipping invalid key during migration (key=%p)", key);
+                continue;  // 避免对空键值进行操作
+            }
+            serverLog(LL_NOTICE, "Processing key: %s, value_type: %d", key, val->type);
+            if (val->access_count < server.access_count_threshold){
+                uint64_t hash = dictGetHash(db->cxl_dict, key);
+                serverLog(LL_NOTICE, "migrating key: %s, hash: %lu", key, hash);
+                sds key_copy = sdsdup(key);
+                incrRefCount(val);
+                dictAdd(db->cxl_dict, key_copy, val);
+                dictDelete(db->dict, key);
+                serverLog(LL_NOTICE, "Migrated key %s to CXL", key);
+            }
+            val->access_count = 0;
+        }
+        dictReleaseIterator(di);
+
+    }
+}
+
 /* This is our timer interrupt, called server.hz times per second.
  * Here is where we do a number of things that need to be done asynchronously.
  * For instance:
@@ -1449,6 +1505,12 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
 
     run_with_period(100) {
         if (moduleCount()) modulesCron();
+    }
+
+    static time_t last_migration_time = 0;
+    if (!server.loading && server.mstime - last_migration_time > 5000){
+        checkMemoryAndMigrateToCXL();
+        last_migration_time = server.mstime;
     }
 
     /* Fire the cron loop modules event. */
@@ -1956,6 +2018,7 @@ void initServerConfig(void) {
     server.next_client_id = 1; /* Client IDs, start from 1 .*/
     server.page_size = sysconf(_SC_PAGESIZE);
     server.pause_cron = 0;
+    server.access_count_threshold = 5;
 
     server.latency_tracking_info_percentiles_len = 3;
     server.latency_tracking_info_percentiles = zmalloc(sizeof(double)*(server.latency_tracking_info_percentiles_len));
@@ -2554,7 +2617,9 @@ void initServer(void) {
     /* Create the Redis databases, and initialize other internal state. */
     for (j = 0; j < server.dbnum; j++) {
         server.db[j].dict = dictCreate(&dbDictType);
+        server.db[j].cxl_dict = dictCreate(&dbDictType);
         server.db[j].expires = dictCreate(&dbExpiresDictType);
+        server.db[j].cxl_expires = dictCreate(&dbExpiresDictType);
         server.db[j].expires_cursor = 0;
         server.db[j].blocking_keys = dictCreate(&keylistDictType);
         server.db[j].ready_keys = dictCreate(&objectKeyPointerValueDictType);

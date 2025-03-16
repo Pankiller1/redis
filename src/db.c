@@ -89,6 +89,8 @@ robj *lookupKey(redisDb *db, robj *key, int flags) {
     robj *val = NULL;
     if (de) {
         val = dictGetVal(de);
+
+        val->access_count++;
         /* Forcing deletion of expired keys on a replica makes the replica
          * inconsistent with the master. We forbid it on readonly replicas, but
          * we have to allow it on writable replicas to make write commands
@@ -107,6 +109,15 @@ robj *lookupKey(redisDb *db, robj *key, int flags) {
             /* The key is no longer valid. */
             val = NULL;
         }
+    }else {
+        serverLog(LL_NOTICE, "try to find key %s in cxl dict, hash: %lu", (char *)key->ptr, dictHashKey(db->cxl_dict, key->ptr));
+        de = dictFind(db->cxl_dict, key->ptr);
+        if (de){
+            serverLog(LL_NOTICE, "found key %s in cxl dict", (char *)key->ptr);
+            val = dictGetVal(de);
+            val->access_count++;
+        }
+        
     }
 
     if (val) {
@@ -320,7 +331,11 @@ static int dbGenericDelete(redisDb *db, robj *key, int async) {
     /* Deleting an entry from the expires dict will not free the sds of
      * the key, because it is shared with the main dictionary. */
     if (dictSize(db->expires) > 0) dictDelete(db->expires,key->ptr);
+    if (dictSize(db->cxl_expires) > 0) dictDelete(db->cxl_expires,key->ptr);
     dictEntry *de = dictUnlink(db->dict,key->ptr);
+    if(!de){
+        de = dictUnlink(db->cxl_dict, key->ptr);
+    }
     if (de) {
         robj *val = dictGetVal(de);
         /* Tells the module that the key has been unlinked from the database. */
@@ -338,6 +353,7 @@ static int dbGenericDelete(redisDb *db, robj *key, int async) {
     } else {
         return 0;
     }
+
 }
 
 /* Delete a key, value, and associated expiration entry if any, from the DB */
@@ -756,6 +772,26 @@ void keysCommand(client *c) {
                 numkeys++;
             }
             decrRefCount(keyobj);
+        }
+        if (c->flags & CLIENT_CLOSE_ASAP)
+            break;
+    }
+    dictReleaseIterator(di);
+
+    di = dictGetSafeIterator(c->db->cxl_dict);
+    while((de = dictNext(di)) != NULL) {
+        sds key = dictGetKey(de);
+        robj *keyobj;
+
+        if (allkeys || stringmatchlen(pattern,plen,key,sdslen(key),0)) {
+            keyobj = createStringObject(key,sdslen(key));
+            // if (!keyIsExpired(c->db,keyobj)) {
+            //     addReplyBulk(c,keyobj);
+            //     numkeys++;
+            // }
+            // decrRefCount(keyobj);
+            addReplyBulk(c,keyobj);
+            numkeys++;
         }
         if (c->flags & CLIENT_CLOSE_ASAP)
             break;
@@ -1532,11 +1568,23 @@ int removeExpire(redisDb *db, robj *key) {
  * after which the key will no longer be considered valid. */
 void setExpire(client *c, redisDb *db, robj *key, long long when) {
     dictEntry *kde, *de;
+    int is_cxl_key = 0;
 
     /* Reuse the sds from the main dict in the expire dict */
     kde = dictFind(db->dict,key->ptr);
+    if (!kde) {
+        kde = dictFind(db->cxl_dict, key->ptr);
+        if (!kde) {
+            serverLog(LL_WARNING, "setExpire: key %s not found in either dict", (char *)key->ptr);
+            return;
+        }
+        is_cxl_key = 1;
+    }
+
+    dict *expire_dict = is_cxl_key ? db->cxl_expires : db->expires;
     serverAssertWithInfo(NULL,key,kde != NULL);
-    de = dictAddOrFind(db->expires,dictGetKey(kde));
+    // de = dictAddOrFind(db->expires,dictGetKey(kde));
+    de = dictAddOrFind(expire_dict,dictGetKey(kde));
     dictSetSignedIntegerVal(de,when);
 
     int writable_slave = server.masterhost && server.repl_slave_ro == 0;
