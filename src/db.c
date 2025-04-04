@@ -270,17 +270,27 @@ void dbOverwrite(redisDb *db, robj *key, robj *val) {
  * The client 'c' argument may be set to NULL if the operation is performed
  * in a context where there is no clear client performing the operation. */
 void setKey(client *c, redisDb *db, robj *key, robj *val, int flags) {
-    int keyfound = 0;
+    // int keyfound = 0;
 
-    if (flags & SETKEY_ALREADY_EXIST)
-        keyfound = 1;
-    else if (!(flags & SETKEY_DOESNT_EXIST))
-        keyfound = (lookupKeyWrite(db,key) != NULL);
+    // if (flags & SETKEY_ALREADY_EXIST)
+    //     keyfound = 1;
+    // else if (!(flags & SETKEY_DOESNT_EXIST))
+    //     keyfound = (lookupKeyWrite(db,key) != NULL);
 
-    if (!keyfound) {
-        dbAdd(db,key,val);
-    } else {
-        dbOverwrite(db,key,val);
+    // if (!keyfound) {
+    //     dbAdd(db,key,val);
+    // } else {
+    //     dbOverwrite(db,key,val);
+    // }
+    dictEntry *de = dictFind(db->dict, key->ptr);
+    dictEntry *cxl_de = dictFind(db->cxl_dict, key->ptr);
+    
+    if (de) {
+        dbOverwrite(db, key, val);
+    }else if (cxl_de) {
+        dictSetVal(db->cxl_dict, cxl_de, val);
+    }else {
+        dbAdd(db, key, val);
     }
     incrRefCount(val);
     if (!(flags & SETKEY_KEEPTTL)) removeExpire(db,key);
@@ -1558,9 +1568,13 @@ void swapdbCommand(client *c) {
 int removeExpire(redisDb *db, robj *key) {
     /* An expire may only be removed if there is a corresponding entry in the
      * main dict. Otherwise, the key will never be freed. */
-    serverAssertWithInfo(NULL,key,dictFind(db->dict,key->ptr) != NULL);
-    return dictDelete(db->expires,key->ptr) == DICT_OK;
+    serverAssertWithInfo(NULL, key,
+        dictFind(db->dict, key->ptr) != NULL || dictFind(db->cxl_dict, key->ptr) != NULL);
+    int removed_from_dict = dictDelete(db->expires, key->ptr) == DICT_OK;
+    int removed_from_cxl  = dictDelete(db->cxl_expires, key->ptr) == DICT_OK;
+    return removed_from_dict || removed_from_cxl;
 }
+
 
 /* Set an expire to the specified key. If the expire is set in the context
  * of an user calling a command 'c' is the client, otherwise 'c' is set
