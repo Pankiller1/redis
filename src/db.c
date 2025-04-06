@@ -89,8 +89,11 @@ robj *lookupKey(redisDb *db, robj *key, int flags) {
     robj *val = NULL;
     if (de) {
         val = dictGetVal(de);
-
         val->access_count++;
+        server.dram_hits++;
+        server.total_lookups++;
+        serverLog(LL_NOTICE, "found key %s in dict, count %d, dram hits %lld, total lookups %lld", (char *)key->ptr, val->access_count, server.dram_hits, server.total_lookups);
+
         /* Forcing deletion of expired keys on a replica makes the replica
          * inconsistent with the master. We forbid it on readonly replicas, but
          * we have to allow it on writable replicas to make write commands
@@ -110,14 +113,18 @@ robj *lookupKey(redisDb *db, robj *key, int flags) {
             val = NULL;
         }
     }else {
-        serverLog(LL_NOTICE, "try to find key %s in cxl dict, hash: %lu", (char *)key->ptr, dictHashKey(db->cxl_dict, key->ptr));
+        // serverLog(LL_NOTICE, "try to find key %s in cxl dict, hash: %lu", (char *)key->ptr, dictHashKey(db->cxl_dict, key->ptr));
         de = dictFind(db->cxl_dict, key->ptr);
         if (de){
-            serverLog(LL_NOTICE, "found key %s in cxl dict", (char *)key->ptr);
+            
             val = dictGetVal(de);
             val->access_count++;
+            server.cxl_hits++;
+            server.total_lookups++;
+            serverLog(LL_NOTICE, "found key %s in cxl dict, count %d, cxl hits %lld, total lookups %lld", (char *)key->ptr, val->access_count, server.cxl_hits, server.total_lookups);
+
         }
-        
+
     }
 
     if (val) {
@@ -343,8 +350,10 @@ static int dbGenericDelete(redisDb *db, robj *key, int async) {
     if (dictSize(db->expires) > 0) dictDelete(db->expires,key->ptr);
     if (dictSize(db->cxl_expires) > 0) dictDelete(db->cxl_expires,key->ptr);
     dictEntry *de = dictUnlink(db->dict,key->ptr);
+    dict *origin_dict = db->dict;
     if(!de){
         de = dictUnlink(db->cxl_dict, key->ptr);
+        origin_dict = db->cxl_dict; 
     }
     if (de) {
         robj *val = dictGetVal(de);
@@ -355,10 +364,10 @@ static int dbGenericDelete(redisDb *db, robj *key, int async) {
             signalKeyAsReady(db,key,val->type);
         if (async) {
             freeObjAsync(key, val, db->id);
-            dictSetVal(db->dict, de, NULL);
+            dictSetVal(origin_dict, de, NULL);
         }
         if (server.cluster_enabled) slotToKeyDelEntry(de, db);
-        dictFreeUnlinkedEntry(db->dict,de);
+        dictFreeUnlinkedEntry(origin_dict,de);
         return 1;
     } else {
         return 0;
@@ -447,6 +456,8 @@ long long emptyDbStructure(redisDb *dbarray, int dbnum, int async,
         } else {
             dictEmpty(dbarray[j].dict,callback);
             dictEmpty(dbarray[j].expires,callback);
+            dictEmpty(dbarray[j].cxl_dict,callback);
+            dictEmpty(dbarray[j].cxl_expires,callback);
         }
         /* Because all keys of database are removed, reset average ttl. */
         dbarray[j].avg_ttl = 0;
@@ -1067,7 +1078,7 @@ void scanCommand(client *c) {
 }
 
 void dbsizeCommand(client *c) {
-    addReplyLongLong(c,dictSize(c->db->dict));
+    addReplyLongLong(c,dictSize(c->db->dict) + dictSize(c->db->cxl_dict));
 }
 
 void lastsaveCommand(client *c) {

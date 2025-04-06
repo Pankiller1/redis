@@ -1179,7 +1179,7 @@ void cronUpdateMemoryStats() {
     }
 }
 
-void checkMemoryAndMigrateToCXL(void){
+void MigrateToCXL(void){
     if (server.loading) return;
     // size_t maxmemory = server.maxmemory;
     // size_t used_memory = zmalloc_used_memory();
@@ -1218,15 +1218,49 @@ void checkMemoryAndMigrateToCXL(void){
                 serverLog(LL_WARNING, "WARNING: Skipping invalid key during migration (key=%p)", key);
                 continue;  // 避免对空键值进行操作
             }
-            serverLog(LL_NOTICE, "Processing key: %s, value_type: %d", key, val->type);
+            // serverLog(LL_NOTICE, "Processing key: %s, value_type: %d", key, val->type);
             if (val->access_count < server.access_count_threshold){
-                uint64_t hash = dictGetHash(db->cxl_dict, key);
-                serverLog(LL_NOTICE, "migrating key: %s, hash: %lu", key, hash);
+                // uint64_t hash = dictGetHash(db->cxl_dict, key);
+                // serverLog(LL_NOTICE, "migrating key: %s, hash: %lu", key, hash);
                 sds key_copy = sdsdup(key);
                 incrRefCount(val);
+                val->access_count = 0;
                 dictAdd(db->cxl_dict, key_copy, val);
                 dictDelete(db->dict, key);
-                serverLog(LL_NOTICE, "Migrated key %s to CXL", key);
+                // serverLog(LL_NOTICE, "Migrated key %s to CXL", key);
+            }
+            val->access_count = val->access_count * 0.5;
+        }
+        dictReleaseIterator(di);
+
+    }
+}
+
+void MigrateToDRAM(void){
+    if (server.loading) return;
+    for (int j = 0; j < server.dbnum; j++){
+        redisDb *db = &server.db[j];
+        if (!db->cxl_dict || dictSize(db->cxl_dict) == 0) continue;
+        dictIterator *di = dictGetSafeIterator(db->cxl_dict);  
+        if (!di) continue;
+        dictEntry *de;
+
+        while((de = dictNext(di)) != NULL){
+            sds key = dictGetKey(de);
+            robj *val = dictGetVal(de);
+            if (!key || !val) {
+                serverLog(LL_WARNING, "WARNING: Skipping invalid key during migration (key=%p)", key);
+                continue;  // 避免对空键值进行操作
+            }
+            // serverLog(LL_NOTICE, "Processing key: %s, value_type: %d", key, val->type);
+            if (val->access_count >= server.promote_threshold){
+                // uint64_t hash = dictGetHash(db->dict, key);
+                // serverLog(LL_NOTICE, "migrating key: %s, hash: %lu", key, hash);
+                sds key_copy = sdsdup(key);
+                incrRefCount(val);
+                dictAdd(db->dict, key_copy, val);
+                dictDelete(db->cxl_dict, key);
+                // serverLog(LL_NOTICE, "Migrated key %s to DRAM", key);
             }
             val->access_count = 0;
         }
@@ -1507,9 +1541,11 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
         if (moduleCount()) modulesCron();
     }
 
+
     static time_t last_migration_time = 0;
-    if (!server.loading && server.mstime - last_migration_time > 5000){
-        checkMemoryAndMigrateToCXL();
+    if (!server.loading && server.mstime - last_migration_time > 1000){
+        MigrateToCXL();
+        MigrateToDRAM();
         last_migration_time = server.mstime;
     }
 
@@ -2019,6 +2055,10 @@ void initServerConfig(void) {
     server.page_size = sysconf(_SC_PAGESIZE);
     server.pause_cron = 0;
     server.access_count_threshold = 5;
+    server.promote_threshold = 2;
+    server.dram_hits = 0;
+    server.cxl_hits = 0;
+    server.total_lookups = 0;
 
     server.latency_tracking_info_percentiles_len = 3;
     server.latency_tracking_info_percentiles = zmalloc(sizeof(double)*(server.latency_tracking_info_percentiles_len));
@@ -2497,6 +2537,9 @@ void resetServerStats(void) {
     server.aof_delayed_fsync = 0;
     server.stat_reply_buffer_shrinks = 0;
     server.stat_reply_buffer_expands = 0;
+    server.dram_hits = 0;
+    server.cxl_hits = 0;
+    server.total_lookups = 0;
     lazyfreeResetStats();
 }
 

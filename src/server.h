@@ -1501,6 +1501,9 @@ struct redisServer {
     size_t page_size;                /* The page size of OS. */
 
     int access_count_threshold;
+    int promote_threshold;
+
+
     /* Modules */
     dict *moduleapi;            /* Exported core APIs dictionary for modules. */
     dict *sharedapi;            /* Like moduleapi but containing the APIs that
@@ -1631,6 +1634,9 @@ struct redisServer {
     } inst_metric[STATS_METRIC_COUNT];
     long long stat_reply_buffer_shrinks; /* Total number of output buffer shrinks */
     long long stat_reply_buffer_expands; /* Total number of output buffer expands */
+    long long dram_hits;
+    long long cxl_hits;
+    long long total_lookups;
 
     /* Configuration */
     int verbosity;                  /* Loglevel in redis.conf */
