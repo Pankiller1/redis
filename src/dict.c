@@ -42,6 +42,8 @@
 #include <stdarg.h>
 #include <limits.h>
 #include <sys/time.h>
+#include <numa.h>
+#include <numaif.h>
 
 #include "dict.h"
 #include "zmalloc.h"
@@ -108,6 +110,17 @@ dict *dictCreate(dictType *type)
 
     _dictInit(d,type);
     return d;
+}
+
+dict *dictCreateOnCXL(dictType *type){
+    dict *d = (dict *)numa_alloc_onnode(sizeof(*d), 2);
+    if(!d) {
+        perror("Failed to allocate memory on CXL");
+        exit(EXIT_FAILURE);
+    }
+
+    _dictInit(d,type);
+    return d; 
 }
 
 /* Initialize the hash table */
@@ -475,7 +488,9 @@ dictEntry *dictUnlink(dict *d, const void *key) {
 void dictFreeUnlinkedEntry(dict *d, dictEntry *he) {
     if (he == NULL) return;
     dictFreeKey(d, he);
+    // printf("success free key\n");
     dictFreeVal(d, he);
+    // printf("success free val\n");
     zfree(he);
 }
 

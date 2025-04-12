@@ -51,6 +51,8 @@
 #include <sys/socket.h>
 #include <lua.h>
 #include <signal.h>
+#include <numa.h>
+#include <numaif.h>
 #include "hdr_histogram.h"
 
 #ifdef HAVE_LIBSYSTEMD
@@ -861,6 +863,7 @@ typedef struct redisObject {
     void *ptr;
 
     int access_count;
+    int migration_flag;
 } robj;
 
 /* The a string name for an object's type as listed above
@@ -1502,6 +1505,7 @@ struct redisServer {
 
     int access_count_threshold;
     int promote_threshold;
+    int migration_interval;
 
 
     /* Modules */
@@ -2633,6 +2637,7 @@ void execCommandAbort(client *c, sds error);
 
 /* Redis object implementation */
 void decrRefCount(robj *o);
+void decrRefCountOnCXL(robj *o);
 void decrRefCountVoid(void *o);
 void incrRefCount(robj *o);
 robj *makeObjectShared(robj *o);
@@ -2649,6 +2654,8 @@ robj *createEmbeddedStringObject(const char *ptr, size_t len);
 robj *tryCreateRawStringObject(const char *ptr, size_t len);
 robj *tryCreateStringObject(const char *ptr, size_t len);
 robj *dupStringObject(const robj *o);
+robj *dupRobjOnNode(robj *o, int node);
+robj *dupRobj(robj *o);
 int isSdsRepresentableAsLongLong(sds s, long long *llval);
 int isObjectRepresentableAsLongLong(robj *o, long long *llongval);
 robj *tryObjectEncoding(robj *o);

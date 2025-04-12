@@ -295,7 +295,12 @@ void setKey(client *c, redisDb *db, robj *key, robj *val, int flags) {
     if (de) {
         dbOverwrite(db, key, val);
     }else if (cxl_de) {
-        dictSetVal(db->cxl_dict, cxl_de, val);
+        // printf("prepare to update key %s on cxl\n", (char *)key->ptr);
+        robj *old = dictGetVal(cxl_de);
+        robj *val_on_cxl = dupRobjOnNode(val, 2);
+        dictSetVal(db->cxl_dict, cxl_de, val_on_cxl); 
+        decrRefCountOnCXL(old);
+
     }else {
         dbAdd(db, key, val);
     }

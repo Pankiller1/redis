@@ -46,6 +46,7 @@ robj *createObject(int type, void *ptr) {
     o->ptr = ptr;
     o->refcount = 1;
     o->access_count = 0;
+    o->migration_flag = 0;
 
     /* Set the LRU to the current lruclock (minutes resolution), or
      * alternatively the LFU counter. */
@@ -228,6 +229,53 @@ robj *dupStringObject(const robj *o) {
     }
 }
 
+robj *dupRobjOnNode(robj *o, int node) {
+    if (!o) return NULL;
+    robj *new_obj = (robj *)numa_alloc_onnode(sizeof(robj), node);
+    if (!new_obj) return NULL;
+    memcpy(new_obj, o, sizeof(robj));
+
+    if (o->type == OBJ_STRING) {
+        if (o->encoding == OBJ_ENCODING_RAW || o->encoding == OBJ_ENCODING_EMBSTR) {
+            new_obj->ptr = sdsdupOnNode((sds)o->ptr, node);
+        } else if (o->encoding == OBJ_ENCODING_INT) {
+            new_obj->ptr = o->ptr;
+        }
+    }
+    new_obj->type = o->type;
+    new_obj->encoding = o->encoding;
+    new_obj->lru = o->lru;
+    new_obj->refcount = 1;
+    new_obj->access_count = 0;
+    new_obj->migration_flag = 0;
+    return new_obj;
+}
+
+robj *dupRobj(robj *o) {
+    if (!o) return NULL;
+
+    robj *new_obj = (robj *)zmalloc(sizeof(robj));
+    if (!new_obj) return NULL;
+
+    memcpy(new_obj, o, sizeof(robj));
+
+    if (o->type == OBJ_STRING) {
+        if (o->encoding == OBJ_ENCODING_RAW || o->encoding == OBJ_ENCODING_EMBSTR) {
+            new_obj->ptr = sdsdup((sds)o->ptr);
+        } else if (o->encoding == OBJ_ENCODING_INT) {
+            new_obj->ptr = o->ptr;
+        }
+    }
+
+    new_obj->type = o->type;
+    new_obj->encoding = o->encoding;
+    new_obj->lru = o->lru;
+    new_obj->refcount = 1;
+    new_obj->access_count = 0;
+    new_obj->migration_flag = 0;
+    return new_obj;
+}
+
 robj *createQuicklistObject(void) {
     quicklist *l = quicklistCreate();
     robj *o = createObject(OBJ_LIST,l);
@@ -291,6 +339,13 @@ robj *createModuleObject(moduleType *mt, void *value) {
 void freeStringObject(robj *o) {
     if (o->encoding == OBJ_ENCODING_RAW) {
         sdsfree(o->ptr);
+    }
+}
+
+void freeStringObjectOnCXL(robj *o) {
+    if (o->encoding == OBJ_ENCODING_RAW || o->encoding == OBJ_ENCODING_EMBSTR) {
+        sdsfreeOnCXL(o->ptr);
+        // printf("[freeStringObjectOnCXL]success\n");
     }
 }
 
@@ -381,6 +436,26 @@ void decrRefCount(robj *o) {
         default: serverPanic("Unknown object type"); break;
         }
         zfree(o);
+    } else {
+        if (o->refcount <= 0) serverPanic("decrRefCount against refcount <= 0");
+        if (o->refcount != OBJ_SHARED_REFCOUNT) o->refcount--;
+    }
+}
+
+void decrRefCountOnCXL(robj *o) {
+    if (o->refcount == 1) {
+        switch(o->type) {
+        case OBJ_STRING: freeStringObjectOnCXL(o); break;
+        case OBJ_LIST: freeListObject(o); break;
+        case OBJ_SET: freeSetObject(o); break;
+        case OBJ_ZSET: freeZsetObject(o); break;
+        case OBJ_HASH: freeHashObject(o); break;
+        case OBJ_MODULE: freeModuleObject(o); break;
+        case OBJ_STREAM: freeStreamObject(o); break;
+        default: serverPanic("Unknown object type"); break;
+        }
+        numa_free(o, sizeof(robj));
+        // printf("successfully freed object on CXL\n");
     } else {
         if (o->refcount <= 0) serverPanic("decrRefCount against refcount <= 0");
         if (o->refcount != OBJ_SHARED_REFCOUNT) o->refcount--;

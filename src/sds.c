@@ -36,6 +36,8 @@
 #include <ctype.h>
 #include <assert.h>
 #include <limits.h>
+#include <numa.h>
+#include <numaif.h>
 #include "sds.h"
 #include "sdsalloc.h"
 
@@ -169,6 +171,72 @@ sds sdsnewlen(const void *init, size_t initlen) {
     return _sdsnewlen(init, initlen, 0);
 }
 
+sds sdsnewlenOnNode(const void *init, size_t initlen, int node) {
+    void *sh;
+    sds s;
+    char type = sdsReqType(initlen);
+    if (type == SDS_TYPE_5 && initlen == 0) type = SDS_TYPE_8;
+    int hdrlen = sdsHdrSize(type);
+    unsigned char *fp;
+    size_t usable = initlen;
+    assert(initlen + hdrlen + 1 > initlen);
+
+    sh = numa_alloc_onnode(hdrlen + initlen + 1, node);
+    if (sh == NULL) return NULL;
+    if (init == SDS_NOINIT)
+        init = NULL;
+    else if (!init)
+        memset(sh, 0, hdrlen + initlen + 1); 
+
+    s = (char *)sh + hdrlen;
+    fp = ((unsigned char *)s) - 1;    
+    if (usable > sdsTypeMaxSize(type))
+        usable = sdsTypeMaxSize(type);
+    
+    switch(type) {
+        case SDS_TYPE_5: {
+            *fp = type | (initlen << SDS_TYPE_BITS);
+            break;
+        }
+        case SDS_TYPE_8: {
+            SDS_HDR_VAR(8, s);
+            sh->len = initlen;
+            sh->alloc = usable;
+            *fp = type;
+            break;
+        }
+        case SDS_TYPE_16: {
+            SDS_HDR_VAR(16, s);
+            sh->len = initlen;
+            sh->alloc = usable;
+            *fp = type;
+            break;
+        }
+        case SDS_TYPE_32: {
+            SDS_HDR_VAR(32, s);
+            sh->len = initlen;
+            sh->alloc = usable;
+            *fp = type;
+            break;
+        }
+        case SDS_TYPE_64: {
+            SDS_HDR_VAR(64, s);
+            sh->len = initlen;
+            sh->alloc = usable;
+            *fp = type;
+            break;
+        }
+        default:
+            return NULL; // 防御
+    }
+
+    if (initlen && init)
+        memcpy(s, init, initlen);
+    s[initlen] = '\0';
+    return s;  
+
+}
+
 sds sdstrynewlen(const void *init, size_t initlen) {
     return _sdsnewlen(init, initlen, 1);
 }
@@ -190,10 +258,21 @@ sds sdsdup(const sds s) {
     return sdsnewlen(s, sdslen(s));
 }
 
+sds sdsdupOnNode(const sds s, int node){
+    return sdsnewlenOnNode(s, sdslen(s), node);
+}
+
 /* Free an sds string. No operation is performed if 's' is NULL. */
 void sdsfree(sds s) {
     if (s == NULL) return;
     s_free((char*)s-sdsHdrSize(s[-1]));
+}
+
+void sdsfreeOnCXL(sds s){
+    if (s == NULL) return;
+    void *realptr = (char*)s - sdsHdrSize(s[-1]);
+    size_t size = sdsAllocSize(s);
+    numa_free(realptr, size);
 }
 
 /* Set the sds string length to the length as obtained with strlen(), so

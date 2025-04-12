@@ -3095,7 +3095,8 @@ standardConfig static_configs[] = {
     createIntConfig("shutdown-timeout", NULL, MODIFIABLE_CONFIG, 0, INT_MAX, server.shutdown_timeout, 10, INTEGER_CONFIG, NULL, NULL),
     createIntConfig("repl-diskless-sync-max-replicas", NULL, MODIFIABLE_CONFIG, 0, INT_MAX, server.repl_diskless_sync_max_replicas, 0, INTEGER_CONFIG, NULL, NULL),
     createIntConfig("access-count-threshold", NULL, MODIFIABLE_CONFIG, 0, INT_MAX, server.access_count_threshold, 5, INTEGER_CONFIG, NULL, NULL),
-    createIntConfig("promote-threshold", NULL, MODIFIABLE_CONFIG, 0, INT_MAX, server.promote_threshold, 2, INTEGER_CONFIG, NULL, NULL),
+    createIntConfig("promote-threshold", NULL, MODIFIABLE_CONFIG, 0, INT_MAX, server.promote_threshold, 3, INTEGER_CONFIG, NULL, NULL),
+    createIntConfig("migration-interval", NULL, MODIFIABLE_CONFIG, 0, INT_MAX, server.migration_interval, 1000, INTEGER_CONFIG, NULL, NULL),
 
     /* Unsigned int configs */
     createUIntConfig("maxclients", NULL, MODIFIABLE_CONFIG, 1, UINT_MAX, server.maxclients, 10000, INTEGER_CONFIG, NULL, updateMaxclients),

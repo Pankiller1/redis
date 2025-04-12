@@ -259,10 +259,22 @@ void dictObjectDestructor(dict *d, void *val)
     decrRefCount(val);
 }
 
+void dictObjectDestructorOnCXL(dict *d, void *val)
+{
+    UNUSED(d);
+    if (val == NULL) return; /* Lazy freeing will set value to NULL. */
+    decrRefCountOnCXL(val);
+}
+
 void dictSdsDestructor(dict *d, void *val)
 {
     UNUSED(d);
     sdsfree(val);
+}
+void dictSdsDestructorOnCXL(dict *d, void *val)
+{
+    UNUSED(d);
+    sdsfreeOnCXL(val);
 }
 
 void *dictSdsDup(dict *d, const void *key) {
@@ -431,6 +443,17 @@ dictType dbDictType = {
     dictSdsKeyCompare,          /* key compare */
     dictSdsDestructor,          /* key destructor */
     dictObjectDestructor,       /* val destructor */
+    dictExpandAllowed,          /* allow to expand */
+    dictEntryMetadataSize       /* size of entry metadata in bytes */
+};
+
+dictType dbDictTypeOnCXL = {
+    dictSdsHash,                /* hash function */
+    NULL,                       /* key dup */
+    NULL,                       /* val dup */
+    dictSdsKeyCompare,          /* key compare */
+    dictSdsDestructorOnCXL,          /* key destructor */
+    dictObjectDestructorOnCXL,       /* val destructor */
     dictExpandAllowed,          /* allow to expand */
     dictEntryMetadataSize       /* size of entry metadata in bytes */
 };
@@ -1179,6 +1202,8 @@ void cronUpdateMemoryStats() {
     }
 }
 
+
+
 void MigrateToCXL(void){
     if (server.loading) return;
     // size_t maxmemory = server.maxmemory;
@@ -1204,6 +1229,8 @@ void MigrateToCXL(void){
     //         dictReleaseIterator(di);
     //     }
     // }
+    int max_keys_to_migrate = 100;
+    int migrated_keys = 0;
     for (int j = 0; j < server.dbnum; j++){
         redisDb *db = &server.db[j];
         if (!db->dict || dictSize(db->dict) == 0) continue;
@@ -1218,18 +1245,21 @@ void MigrateToCXL(void){
                 serverLog(LL_WARNING, "WARNING: Skipping invalid key during migration (key=%p)", key);
                 continue;  // 避免对空键值进行操作
             }
+            // if (val->migration_flag == 1) {
+            //     continue;
+            // }            
             // serverLog(LL_NOTICE, "Processing key: %s, value_type: %d", key, val->type);
-            if (val->access_count < server.access_count_threshold){
-                // uint64_t hash = dictGetHash(db->cxl_dict, key);
-                // serverLog(LL_NOTICE, "migrating key: %s, hash: %lu", key, hash);
-                sds key_copy = sdsdup(key);
-                incrRefCount(val);
-                val->access_count = 0;
-                dictAdd(db->cxl_dict, key_copy, val);
+            
+            if (migrated_keys < max_keys_to_migrate && val->access_count < server.access_count_threshold){
+                // val->migration_flag = 1;
+                sds key_copy = sdsdupOnNode(key, 2);
+                robj *val_copy = dupRobjOnNode(val, 2);
+                dictAdd(db->cxl_dict, key_copy, val_copy);
                 dictDelete(db->dict, key);
-                // serverLog(LL_NOTICE, "Migrated key %s to CXL", key);
+                serverLog(LL_NOTICE, "migrate key %s to cxl, val type %d, val encoding %d", key_copy, val->type, val->encoding);
+                migrated_keys++; // 增加计数
             }
-            val->access_count = val->access_count * 0.5;
+            val->access_count = val->access_count * 0.2;
         }
         dictReleaseIterator(di);
 
@@ -1238,7 +1268,10 @@ void MigrateToCXL(void){
 
 void MigrateToDRAM(void){
     if (server.loading) return;
-    for (int j = 0; j < server.dbnum; j++){
+
+    int max_keys_to_migrate = 100;
+    int migrated_keys = 0;
+    for (int j = 0; j < server.dbnum; j++){    
         redisDb *db = &server.db[j];
         if (!db->cxl_dict || dictSize(db->cxl_dict) == 0) continue;
         dictIterator *di = dictGetSafeIterator(db->cxl_dict);  
@@ -1252,15 +1285,23 @@ void MigrateToDRAM(void){
                 serverLog(LL_WARNING, "WARNING: Skipping invalid key during migration (key=%p)", key);
                 continue;  // 避免对空键值进行操作
             }
-            // serverLog(LL_NOTICE, "Processing key: %s, value_type: %d", key, val->type);
-            if (val->access_count >= server.promote_threshold){
+            // if (val->migration_flag == 1) {
+            //     continue;
+            // }                  
+            if (migrated_keys < max_keys_to_migrate && val->access_count >= server.promote_threshold){
+                // val->migration_flag = 1;
                 // uint64_t hash = dictGetHash(db->dict, key);
                 // serverLog(LL_NOTICE, "migrating key: %s, hash: %lu", key, hash);
                 sds key_copy = sdsdup(key);
-                incrRefCount(val);
-                dictAdd(db->dict, key_copy, val);
+                robj *val_copy = dupRobj(val);  
+
+                dictAdd(db->dict, key_copy, val_copy);
                 dictDelete(db->cxl_dict, key);
-                // serverLog(LL_NOTICE, "Migrated key %s to DRAM", key);
+                serverLog(LL_NOTICE, "Migrated key %s to DRAM", key_copy);
+             
+                // dictReplace(db->dict, key_copy, val_copy);
+                // val->migration_flag = 0;
+                migrated_keys++; // 增加计数
             }
             val->access_count = 0;
         }
@@ -1542,8 +1583,9 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
     }
 
 
+
     static time_t last_migration_time = 0;
-    if (!server.loading && server.mstime - last_migration_time > 1000){
+    if (!server.loading && server.mstime - last_migration_time >= 5000){
         MigrateToCXL();
         MigrateToDRAM();
         last_migration_time = server.mstime;
@@ -2056,6 +2098,7 @@ void initServerConfig(void) {
     server.pause_cron = 0;
     server.access_count_threshold = 5;
     server.promote_threshold = 2;
+    server.migration_interval = 1000;
     server.dram_hits = 0;
     server.cxl_hits = 0;
     server.total_lookups = 0;
@@ -2660,9 +2703,9 @@ void initServer(void) {
     /* Create the Redis databases, and initialize other internal state. */
     for (j = 0; j < server.dbnum; j++) {
         server.db[j].dict = dictCreate(&dbDictType);
-        server.db[j].cxl_dict = dictCreate(&dbDictType);
+        // server.db[j].cxl_dict = dictCreate(&dbDictType);
         server.db[j].expires = dictCreate(&dbExpiresDictType);
-        server.db[j].cxl_expires = dictCreate(&dbExpiresDictType);
+        // server.db[j].cxl_expires = dictCreate(&dbExpiresDictType);
         server.db[j].expires_cursor = 0;
         server.db[j].blocking_keys = dictCreate(&keylistDictType);
         server.db[j].ready_keys = dictCreate(&objectKeyPointerValueDictType);
@@ -2671,6 +2714,11 @@ void initServer(void) {
         server.db[j].avg_ttl = 0;
         server.db[j].defrag_later = listCreate();
         server.db[j].slots_to_keys = NULL; /* Set by clusterInit later on if necessary. */
+        
+        if(numa_available() != -1) {
+            server.db[j].cxl_dict = dictCreateOnCXL(&dbDictTypeOnCXL);
+            server.db[j].cxl_expires = dictCreateOnCXL(&dbExpiresDictType);
+        }
         listSetFreeMethod(server.db[j].defrag_later,(void (*)(void*))sdsfree);
     }
     evictionPoolAlloc(); /* Initialize the LRU keys pool. */
