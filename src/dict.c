@@ -488,9 +488,7 @@ dictEntry *dictUnlink(dict *d, const void *key) {
 void dictFreeUnlinkedEntry(dict *d, dictEntry *he) {
     if (he == NULL) return;
     dictFreeKey(d, he);
-    // printf("success free key\n");
     dictFreeVal(d, he);
-    // printf("success free val\n");
     zfree(he);
 }
 

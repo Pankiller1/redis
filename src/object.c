@@ -455,6 +455,7 @@ void decrRefCountOnCXL(robj *o) {
         default: serverPanic("Unknown object type"); break;
         }
         numa_free(o, sizeof(robj));
+        // zfree(o);
         // printf("successfully freed object on CXL\n");
     } else {
         if (o->refcount <= 0) serverPanic("decrRefCount against refcount <= 0");

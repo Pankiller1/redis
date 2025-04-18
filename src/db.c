@@ -90,9 +90,9 @@ robj *lookupKey(redisDb *db, robj *key, int flags) {
     if (de) {
         val = dictGetVal(de);
         val->access_count++;
-        server.dram_hits++;
-        server.total_lookups++;
-        serverLog(LL_NOTICE, "found key %s in dict, count %d, dram hits %lld, total lookups %lld", (char *)key->ptr, val->access_count, server.dram_hits, server.total_lookups);
+        // server.dram_hits++;
+        // server.total_lookups++;
+        // serverLog(LL_NOTICE, "found key %s in dict, count %d, dram hits %lld, total lookups %lld", (char *)key->ptr, val->access_count, server.dram_hits, server.total_lookups);
 
         /* Forcing deletion of expired keys on a replica makes the replica
          * inconsistent with the master. We forbid it on readonly replicas, but
@@ -119,9 +119,9 @@ robj *lookupKey(redisDb *db, robj *key, int flags) {
             
             val = dictGetVal(de);
             val->access_count++;
-            server.cxl_hits++;
-            server.total_lookups++;
-            serverLog(LL_NOTICE, "found key %s in cxl dict, count %d, cxl hits %lld, total lookups %lld", (char *)key->ptr, val->access_count, server.cxl_hits, server.total_lookups);
+            // server.cxl_hits++;
+            // server.total_lookups++;
+            // serverLog(LL_NOTICE, "found key %s in cxl dict, count %d, cxl hits %lld, total lookups %lld", (char *)key->ptr, val->access_count, server.cxl_hits, server.total_lookups);
 
         }
 

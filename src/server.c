@@ -1202,6 +1202,45 @@ void cronUpdateMemoryStats() {
     }
 }
 
+void CheckMemAndMigrate(void){
+    if (server.loading) return;
+    // size_t maxmemory = server.maxmemory;
+    size_t used_memory = zmalloc_used_memory();
+    // size_t threshold_memory = (maxmemory * 80) / 100;
+    if (used_memory >= 41943040){
+        int max_keys_to_migrate = 1500;
+        int migrated_keys = 0;
+        for (int j = 0; j < server.dbnum; j++){
+            redisDb *db = &server.db[j];
+            if (!db->dict || dictSize(db->dict) == 0) continue;
+            dictIterator *di = dictGetSafeIterator(db->dict);  
+            if (!di) continue;
+            dictEntry *de;
+
+            while((de = dictNext(di)) != NULL){
+                sds key = dictGetKey(de);
+                robj *val = dictGetVal(de);
+                if (!key || !val) {
+                    serverLog(LL_WARNING, "WARNING: Skipping invalid key during migration (key=%p)", key);
+                    continue;  // 避免对空键值进行操作
+                }            
+                if (migrated_keys < max_keys_to_migrate && val->access_count < server.access_count_threshold){
+                    // val->migration_flag = 1;
+                    sds key_copy = sdsdupOnNode(key, 2);
+                    robj *val_copy = dupRobjOnNode(val, 2);
+                    dictAdd(db->cxl_dict, key_copy, val_copy);
+                    dictDelete(db->dict, key);
+                    serverLog(LL_NOTICE, "migrate key %s to cxl, val type %d, val encoding %d", key_copy, val->type, val->encoding);
+                    migrated_keys++; // 增加计数
+                }
+                val->access_count = val->access_count * 0.5;
+            }
+            dictReleaseIterator(di);
+
+        }
+    }
+}
+
 
 
 void MigrateToCXL(void){
@@ -1229,7 +1268,7 @@ void MigrateToCXL(void){
     //         dictReleaseIterator(di);
     //     }
     // }
-    int max_keys_to_migrate = 100;
+    int max_keys_to_migrate = 1500;
     int migrated_keys = 0;
     for (int j = 0; j < server.dbnum; j++){
         redisDb *db = &server.db[j];
@@ -1297,7 +1336,7 @@ void MigrateToDRAM(void){
 
                 dictAdd(db->dict, key_copy, val_copy);
                 dictDelete(db->cxl_dict, key);
-                serverLog(LL_NOTICE, "Migrated key %s to DRAM", key_copy);
+                // serverLog(LL_NOTICE, "Migrated key %s to DRAM", key_copy);
              
                 // dictReplace(db->dict, key_copy, val_copy);
                 // val->migration_flag = 0;
@@ -1583,11 +1622,11 @@ int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientData) {
     }
 
 
-
     static time_t last_migration_time = 0;
-    if (!server.loading && server.mstime - last_migration_time >= 5000){
-        MigrateToCXL();
-        MigrateToDRAM();
+    if (!server.loading && server.mstime - last_migration_time >= 500){
+        CheckMemAndMigrate();
+        // MigrateToCXL();
+        // MigrateToDRAM();
         last_migration_time = server.mstime;
     }
 
